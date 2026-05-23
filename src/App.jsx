@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 import {
   Activity,
   Apple,
@@ -16,6 +17,7 @@ import {
   LogOut,
   MessageSquare,
   Moon,
+  Phone,
   Plus,
   Salad,
   Scale,
@@ -43,50 +45,38 @@ const ACCENT = "#FF6B5B";          // coral — energy, progress, key moments
 const ACCENT_SOFT = "#FFE8E5";     // tinted coral for subtle backgrounds
 
 /* ============================================================
-   Persistent storage (cross-session backend)
+   Supabase backend (real cross-device accounts + storage)
    ============================================================ */
 
-const AUTH_KEY = "lift:auth";
-const userDataKey = (email) => `lift:userdata:${email}`;
-const hasStorage = typeof window !== "undefined" && !!window.storage;
+const SUPABASE_URL = "https://lrprwiodhhldzqlulpsq.supabase.co";
+const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxycHJ3aW9kaGhsZHpxbHVscHNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1MTU4MzksImV4cCI6MjA5NDA5MTgzOX0.dgwwiX7TNlcESU-8OrnEW_qXE22XJBmfA3eZMQ9b5yY";
 
-async function sha256(text) {
-  if (!window.crypto?.subtle) return text; // fallback if crypto unavailable
-  const buf = new TextEncoder().encode(text);
-  const hash = await window.crypto.subtle.digest("SHA-256", buf);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-async function loadAuth() {
-  if (!hasStorage) return { users: {}, activeEmail: null };
-  try {
-    const r = await window.storage.get(AUTH_KEY);
-    return r?.value ? JSON.parse(r.value) : { users: {}, activeEmail: null };
-  } catch {
-    return { users: {}, activeEmail: null };
-  }
-}
-async function saveAuth(auth) {
-  if (!hasStorage) return;
-  try {
-    await window.storage.set(AUTH_KEY, JSON.stringify(auth));
-  } catch {}
-}
+// Load the signed-in user's data row (returns the stored JSON blob or null)
 async function loadUserData(email) {
-  if (!hasStorage || !email) return null;
+  if (!email) return null;
   try {
-    const r = await window.storage.get(userDataKey(email));
-    return r?.value ? JSON.parse(r.value) : null;
+    const { data, error } = await supabase
+      .from("user_data")
+      .select("data")
+      .eq("email", email)
+      .maybeSingle();
+    if (error) return null;
+    return data?.data ?? null;
   } catch {
     return null;
   }
 }
+
+// Save (upsert) the signed-in user's data row
 async function saveUserData(email, data) {
-  if (!hasStorage || !email) return;
+  if (!email) return;
   try {
-    await window.storage.set(userDataKey(email), JSON.stringify(data));
+    await supabase
+      .from("user_data")
+      .upsert({ email, data, updated_at: new Date().toISOString() }, { onConflict: "email" });
   } catch {}
 }
 
@@ -887,6 +877,14 @@ function Header({ onHome, view, currentUser, onOpenAuth, onSignOut, go }) {
               <ArrowLeft className="w-4 h-4" /> Home
             </button>
           )}
+          <button
+            onClick={() => go("hotline")}
+            className={`text-sm transition hover:text-slate-900 ${
+              view === "hotline" ? "text-slate-900 font-medium" : "text-slate-600"
+            }`}
+          >
+            LIFT Hotline
+          </button>
           <button
             onClick={() => go("coaches")}
             className={`text-sm transition hover:text-slate-900 ${
@@ -4091,6 +4089,130 @@ function PlaceholderPage({ eyebrow, title, note }) {
   );
 }
 
+function LiftHotline() {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setError("");
+    if (!name.trim() || !email.trim()) {
+      setError("Please enter your name and email so we can reach you.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("https://api.web3forms.com/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          access_key: WEB3FORMS_ACCESS_KEY,
+          subject: "New LIFT Hotline request",
+          from_name: "LIFT Hotline",
+          name: name.trim(),
+          email: email.trim(),
+          phone: phone.trim() || "(not provided)",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.message || `Status ${res.status}`);
+      }
+      setSent(true);
+    } catch (e) {
+      setError(`Couldn't send your request (${e.message}). Please email us at holisticcareorg@gmail.com.`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="max-w-2xl mx-auto px-6 py-20">
+      <div className="eyebrow mb-3 flex items-center gap-2" style={{ color: ACCENT }}>
+        <Phone className="w-3.5 h-3.5" /> LIFT Hotline
+      </div>
+      <h1 className="font-serif text-4xl md:text-5xl tracking-tight mb-4" style={{ color: NAVY_DEEP }}>
+        Talk to a real <span className="font-serif-italic" style={{ color: ACCENT }}>person</span>.
+      </h1>
+      <p className="text-slate-600 leading-relaxed mb-10 max-w-md">
+        Leave your contact information and a member of the Holistic Care team will reach out to you
+        directly. No bots — a real person who can help.
+      </p>
+
+      {sent ? (
+        <div className="border border-slate-200 p-8 rounded-sm text-center lift-card">
+          <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: ACCENT_SOFT }}>
+            <Phone className="w-5 h-5" style={{ color: ACCENT }} />
+          </div>
+          <div className="font-serif text-3xl tracking-tight mb-3" style={{ color: NAVY_DEEP }}>
+            Request received.
+          </div>
+          <p className="text-slate-600 leading-relaxed">
+            Someone from the Holistic Care team will reach out to you as soon as possible.
+          </p>
+        </div>
+      ) : (
+        <div className="border border-slate-200 p-8 rounded-sm">
+          <div className="space-y-5">
+            <div>
+              <div className="text-sm font-medium mb-2" style={{ color: NAVY_DEEP }}>Name</div>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your full name"
+                className="w-full border border-slate-300 px-4 py-3 rounded-sm focus:outline-none focus:border-slate-900"
+              />
+            </div>
+            <div>
+              <div className="text-sm font-medium mb-2" style={{ color: NAVY_DEEP }}>Email</div>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="your@email.com"
+                className="w-full border border-slate-300 px-4 py-3 rounded-sm focus:outline-none focus:border-slate-900"
+              />
+            </div>
+            <div>
+              <div className="text-sm font-medium mb-2" style={{ color: NAVY_DEEP }}>
+                Phone <span className="text-slate-400 font-normal">(optional)</span>
+              </div>
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="(555) 555-5555"
+                className="w-full border border-slate-300 px-4 py-3 rounded-sm focus:outline-none focus:border-slate-900"
+              />
+            </div>
+            {error && (
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-sm">
+                {error}
+              </div>
+            )}
+            <button
+              onClick={submit}
+              disabled={busy}
+              className="w-full py-3.5 rounded-sm text-white text-sm font-medium hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
+              style={{ background: ACCENT }}
+            >
+              <Phone className="w-4 h-4" />
+              {busy ? "Sending…" : "Request live support"}
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 mt-5 leading-relaxed">
+            Your information is sent securely to the Holistic Care team and used only to contact you.
+          </p>
+        </div>
+      )}
+    </main>
+  );
+}
+
 function ProjectCoaches() {
   const KEYS = {
     neuro: "Balance!",
@@ -5235,12 +5357,10 @@ function buildLiftSystemPrompt(profile, results, dailyKcal) {
 async function callLiftLLM(userMessages, profile, results, dailyKcal) {
   // userMessages should be a clean alternating user/assistant array, with the last entry being a user turn.
   const system = buildLiftSystemPrompt(profile, results, dailyKcal);
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/ask", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
       system,
       messages: userMessages,
     }),
@@ -5250,11 +5370,7 @@ async function callLiftLLM(userMessages, profile, results, dailyKcal) {
     throw new Error(`API ${res.status}: ${body.slice(0, 200)}`);
   }
   const data = await res.json();
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
+  const text = (data.text || "").trim();
   if (!text) throw new Error("Empty response from API");
   return text;
 }
@@ -5426,6 +5542,7 @@ function AuthModal({ initialMode, onClose, onAuth }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -5436,6 +5553,7 @@ function AuthModal({ initialMode, onClose, onAuth }) {
 
   async function submit() {
     setError("");
+    setSuccess("");
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !password) {
       setError("Email and password are required.");
@@ -5453,32 +5571,50 @@ function AuthModal({ initialMode, onClose, onAuth }) {
       setError("Passwords don't match.");
       return;
     }
-    if (!hasStorage) {
-      setError("Storage isn't available in this environment, so accounts can't be saved.");
-      return;
-    }
 
     setBusy(true);
     try {
-      const auth = await loadAuth();
-      const passwordHash = await sha256(password + ":lift-salt");
       if (mode === "signup") {
-        if (auth.users[cleanEmail]) {
-          setError("An account with this email already exists. Try signing in.");
+        const { data, error: signErr } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+        });
+        if (signErr) {
+          setError(signErr.message || "Couldn't create account.");
           return;
         }
-        auth.users[cleanEmail] = { passwordHash, createdAt: Date.now() };
+        // Email confirmation is disabled, so a session should return immediately.
+        // If for any reason it doesn't, sign in directly.
+        let userData = null;
+        if (!data.session) {
+          const { error: siErr } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password,
+          });
+          if (siErr) {
+            setError("Account created. Please sign in.");
+            setMode("signin");
+            return;
+          }
+        }
+        userData = await loadUserData(cleanEmail);
+        setSuccess("Account created! Signing you in…");
+        setTimeout(() => onAuth(cleanEmail, userData, true), 700);
       } else {
-        const u = auth.users[cleanEmail];
-        if (!u || u.passwordHash !== passwordHash) {
+        const { error: signErr } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+        if (signErr) {
           setError("Email or password is incorrect.");
           return;
         }
+        const userData = await loadUserData(cleanEmail);
+        setSuccess("Signed in! Loading your dashboard…");
+        setTimeout(() => onAuth(cleanEmail, userData, false), 700);
       }
-      auth.activeEmail = cleanEmail;
-      await saveAuth(auth);
-      const userData = await loadUserData(cleanEmail);
-      onAuth(cleanEmail, userData, mode === "signup");
+    } catch (e) {
+      setError("Something went wrong. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -5562,6 +5698,12 @@ function AuthModal({ initialMode, onClose, onAuth }) {
           </div>
         )}
 
+        {success && (
+          <div className="mt-4 text-sm px-3 py-2 rounded-sm" style={{ color: "#15803D", background: "#F0FDF4", border: "1px solid #BBF7D0" }}>
+            {success}
+          </div>
+        )}
+
         <button
           onClick={submit}
           disabled={busy}
@@ -5575,14 +5717,14 @@ function AuthModal({ initialMode, onClose, onAuth }) {
           {mode === "signup" ? (
             <>
               Already have an account?{" "}
-              <button onClick={() => { setMode("signin"); setError(""); }} className="underline hover:no-underline" style={{ color: NAVY }}>
+              <button onClick={() => { setMode("signin"); setError(""); setSuccess(""); }} className="underline hover:no-underline" style={{ color: NAVY }}>
                 Sign in
               </button>
             </>
           ) : (
             <>
               No account yet?{" "}
-              <button onClick={() => { setMode("signup"); setError(""); }} className="underline hover:no-underline" style={{ color: NAVY }}>
+              <button onClick={() => { setMode("signup"); setError(""); setSuccess(""); }} className="underline hover:no-underline" style={{ color: NAVY }}>
                 Create one
               </button>
             </>
@@ -5625,16 +5767,17 @@ export default function App() {
     { proteinG: 0, carbG: 0, fatG: 0 }
   );
 
-  // On mount: restore active session if there is one
+  // On mount: restore active Supabase session if there is one
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const auth = await loadAuth();
+      const { data: { session } } = await supabase.auth.getSession();
       if (cancelled) return;
-      if (auth.activeEmail) {
-        const userData = migrateUserData(await loadUserData(auth.activeEmail));
+      if (session?.user?.email) {
+        const email = session.user.email;
+        const userData = migrateUserData(await loadUserData(email));
         if (cancelled) return;
-        setCurrentUser(auth.activeEmail);
+        setCurrentUser(email);
         if (userData) {
           if (userData.profile) setProfile(userData.profile);
           if (userData.results) setResults(userData.results);
@@ -5684,9 +5827,7 @@ export default function App() {
   }
 
   async function onSignOut() {
-    const auth = await loadAuth();
-    auth.activeEmail = null;
-    await saveAuth(auth);
+    await supabase.auth.signOut();
     setCurrentUser(null);
   }
 
@@ -5793,6 +5934,7 @@ export default function App() {
         )}
         {view === "calculators" && <Calculators onComplete={onSurveyComplete} />}
         {view === "meals" && <MealPlans go={go} />}
+        {view === "hotline" && <LiftHotline />}
         {view === "coaches" && <ProjectCoaches />}
         {view === "about" && <About go={go} />}
         {view === "contact" && <Contact />}
