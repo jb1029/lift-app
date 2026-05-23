@@ -3321,14 +3321,54 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
   const [kcal, setKcal] = useState("");
   const [servings, setServings] = useState(1);
   const [baseKcal, setBaseKcal] = useState(null); // kcal of one serving when picked from DB
-  const [baseLabel, setBaseLabel] = useState(""); // e.g., "1 cup", for display
+  const [baseLabel, setBaseLabel] = useState(""); // e.g., "per 100g", for display
+  const [baseMacros, setBaseMacros] = useState(null); // {protein, carbs, fat} per serving from USDA
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestions, setSuggestions] = useState([]);
+  const [searching, setSearching] = useState(false);
 
   const SERVING_OPTIONS = [0.25, 0.5, 1, 2, 3, 4, 5];
 
-  const suggestions = name.trim().length > 1
-    ? FOOD_DB.filter((f) => f.name.toLowerCase().includes(name.toLowerCase().trim())).slice(0, 8)
-    : [];
+  // Debounced USDA search; falls back to local FOOD_DB if the API fails
+  useEffect(() => {
+    const q = name.trim();
+    if (q.length < 2 || baseKcal != null) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/food-search?q=${encodeURIComponent(q)}`);
+        if (!res.ok) throw new Error("search failed");
+        const data = await res.json();
+        if (cancelled) return;
+        const foods = (data.foods || []).map((f) => ({
+          name: f.name,
+          kcal: f.kcal,
+          label: f.label || "per 100g",
+          macros: { protein: f.protein || 0, carbs: f.carbs || 0, fat: f.fat || 0 },
+        }));
+        // Fall back to local list if USDA returned nothing
+        setSuggestions(foods.length ? foods.slice(0, 8) : localMatches(q));
+      } catch {
+        if (!cancelled) setSuggestions(localMatches(q));
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [name, baseKcal]);
+
+  function localMatches(q) {
+    return FOOD_DB.filter((f) => f.name.toLowerCase().includes(q.toLowerCase()))
+      .slice(0, 8)
+      .map((f) => ({ name: f.name, kcal: f.kcal, label: f.label, macros: null }));
+  }
 
   const today = todayString();
   const todayMeals = meals.filter((m) => (m.date || today) === today);
@@ -3350,8 +3390,10 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
     setName(f.name);
     setBaseKcal(f.kcal);
     setBaseLabel(f.label);
+    setBaseMacros(f.macros); // null for local foods, real macros for USDA
     setKcal(String(Math.round(f.kcal * servings)));
     setShowSuggestions(false);
+    setSuggestions([]);
   }
 
   // When user types freely (not from DB), discard base tracking so kcal is theirs
@@ -3362,6 +3404,7 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
       // typing manually after a selection — clear the base so the kcal field is editable freely
       setBaseKcal(null);
       setBaseLabel("");
+      setBaseMacros(null);
     }
   }
 
@@ -3373,8 +3416,17 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
       displayName = `${displayName} (${servings}× ${baseLabel})`;
     }
     const finalKcal = Math.round(Number(kcal));
-    // Estimate macros from food name + final kcal
-    const macros = estimateMacrosForFood(name.trim(), finalKcal);
+    // Use real USDA macros if available (scaled by servings); otherwise estimate from name
+    let macros;
+    if (baseMacros) {
+      macros = {
+        proteinG: Math.round(baseMacros.protein * servings),
+        carbG: Math.round(baseMacros.carbs * servings),
+        fatG: Math.round(baseMacros.fat * servings),
+      };
+    } else {
+      macros = estimateMacrosForFood(name.trim(), finalKcal);
+    }
     addMeal({
       id: Date.now(),
       name: displayName,
@@ -3390,6 +3442,7 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
     setServings(1);
     setBaseKcal(null);
     setBaseLabel("");
+    setBaseMacros(null);
   }
 
   return (
@@ -3445,18 +3498,21 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
               className="w-full border border-slate-300 px-3 py-2.5 rounded-sm focus:outline-none focus:border-slate-900"
               onKeyDown={(e) => e.key === "Enter" && add()}
             />
-            {showSuggestions && name.trim().length > 1 && suggestions.length > 0 && (
+            {showSuggestions && name.trim().length > 1 && baseKcal == null && (suggestions.length > 0 || searching) && (
               <ul className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-300 max-h-64 overflow-auto shadow-md">
-                {suggestions.map((s) => (
-                  <li key={s.name}>
+                {searching && suggestions.length === 0 && (
+                  <li className="px-3 py-2.5 text-sm text-slate-400">Searching…</li>
+                )}
+                {suggestions.map((s, idx) => (
+                  <li key={`${s.name}-${idx}`}>
                     <button
                       type="button"
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => pickFood(s)}
                       className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between gap-3 border-b border-slate-100 last:border-b-0"
                     >
-                      <div>
-                        <div className="text-sm" style={{ color: NAVY }}>{s.name}</div>
+                      <div className="min-w-0">
+                        <div className="text-sm truncate" style={{ color: NAVY }}>{s.name}</div>
                         <div className="text-xs text-slate-500">{s.label}</div>
                       </div>
                       <div className="text-sm font-medium whitespace-nowrap" style={{ color: NAVY }}>
@@ -3476,7 +3532,7 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
           >
             {SERVING_OPTIONS.map((s) => (
               <option key={s} value={s}>
-                {s}× {baseLabel || "serving"}
+                {baseLabel === "per 100g" ? `${s * 100}g` : `${s}× ${baseLabel || "serving"}`}
               </option>
             ))}
           </select>
@@ -3502,10 +3558,13 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
         </div>
         {baseKcal != null && (
           <div className="text-xs text-slate-500 mt-2">
-            {servings}× {baseLabel} · {baseKcal} kcal/serving = <span style={{ color: NAVY }}>{Math.round(baseKcal * servings)} kcal</span>
+            {baseLabel === "per 100g" ? `${servings * 100}g` : `${servings}× ${baseLabel}`} · <span style={{ color: NAVY }}>{Math.round(baseKcal * servings)} kcal</span>
+            {baseMacros && (
+              <span> · P {Math.round(baseMacros.protein * servings)}g · C {Math.round(baseMacros.carbs * servings)}g · F {Math.round(baseMacros.fat * servings)}g</span>
+            )}
           </div>
         )}
-        {name.trim().length > 1 && suggestions.length === 0 && (
+        {name.trim().length > 1 && baseKcal == null && !searching && suggestions.length === 0 && (
           <div className="text-xs text-slate-500 mt-2">No matches — type your own calories above.</div>
         )}
       </div>
