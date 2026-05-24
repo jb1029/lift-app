@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   Activity,
+  AlertTriangle,
   Apple,
   ArrowLeft,
   ArrowRight,
@@ -763,6 +764,21 @@ function pickTip(profile) {
 
 /* ---------- Calculations (Mifflin–St Jeor) ---------- */
 
+const LIFT_QUOTES = [
+  "Every small choice today is a vote for the person you're becoming. The LIFT team is with you every step of the way.",
+  "Progress isn't about being perfect — it's about showing up for yourself, one day at a time. We're here to support you.",
+  "Your health journey is yours alone, but you don't have to walk it alone. The LIFT team believes in you.",
+  "Strength isn't built in a day; it's built daily. Keep going — we're cheering you on.",
+  "You are capable of more than you know. Wherever you're starting from, the LIFT team is here to help you thrive.",
+  "Small steps still move you forward. Be proud of every one — and know the LIFT team has your back.",
+  "Taking care of your body is an act of self-respect. We're honored to support you on your journey.",
+  "The fact that you're here, trying, already says everything about your strength. LIFT is in your corner.",
+];
+
+function pickQuote() {
+  return LIFT_QUOTES[Math.floor(Date.now() / 86400000) % LIFT_QUOTES.length];
+}
+
 function calcBMR({ sex, weightKg, heightCm, age }) {
   const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
   return sex === "male" ? base + 5 : base - 161;
@@ -879,9 +895,8 @@ function Header({ onHome, view, currentUser, onOpenAuth, onSignOut, go }) {
           )}
           <button
             onClick={() => go("hotline")}
-            className={`text-sm transition hover:text-slate-900 ${
-              view === "hotline" ? "text-slate-900 font-medium" : "text-slate-600"
-            }`}
+            className="lift-hotline-btn text-sm font-semibold text-white px-4 py-2 rounded-full"
+            style={{ background: "#E11D2A" }}
           >
             LIFT Hotline
           </button>
@@ -1051,6 +1066,9 @@ function Home({ go, hasResults, currentUser, onOpenAuth, profile, results, daily
             >
               Welcome back{profile?.firstName ? <>, <span className="font-serif-italic" style={{ color: ACCENT }}>{profile.firstName}</span></> : ""}.
             </h1>
+            <p className="mt-4 text-base md:text-lg leading-relaxed max-w-xl font-serif-italic" style={{ color: NAVY_SOFT }}>
+              {pickQuote()}
+            </p>
 
             <div className="mt-10 grid md:grid-cols-3 gap-4">
               <div className="md:col-span-2 bg-white p-7 lift-card rounded-sm">
@@ -3316,18 +3334,46 @@ function MealPlanModal({ plan, onClose }) {
    MEAL LOGGER
    ============================================================ */
 
-function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, currentUser, onGoProgress }) {
+function MealLogger({ results, profile, meals, addMeal, removeMeal, clearTodayMeals, currentUser, onGoProgress }) {
   const [name, setName] = useState("");
   const [kcal, setKcal] = useState("");
   const [servings, setServings] = useState(1);
   const [baseKcal, setBaseKcal] = useState(null); // kcal of one serving when picked from DB
   const [baseLabel, setBaseLabel] = useState(""); // e.g., "per 100g", for display
   const [baseMacros, setBaseMacros] = useState(null); // {protein, carbs, fat} per serving from USDA
+  const [baseMicros, setBaseMicros] = useState(null); // micronutrients per 100g from USDA
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [searching, setSearching] = useState(false);
 
   const SERVING_OPTIONS = [0.25, 0.5, 1, 2, 3, 4, 5];
+
+  // Map each allergen to keywords that might appear in a food name
+  const ALLERGEN_KEYWORDS = {
+    Peanuts: ["peanut"],
+    "Tree nuts": ["almond", "walnut", "cashew", "pecan", "pistachio", "hazelnut", "macadamia", "brazil nut", "pine nut"],
+    Shellfish: ["shrimp", "crab", "lobster", "prawn", "shellfish", "scallop", "clam", "oyster", "mussel"],
+    Fish: ["salmon", "tuna", "cod", "tilapia", "halibut", "sardine", "anchovy", "mackerel", "fish", "trout"],
+    Eggs: ["egg"],
+    Dairy: ["milk", "cheese", "yogurt", "butter", "cream", "dairy", "whey", "ricotta", "mozzarella", "cheddar", "parmesan", "feta"],
+    Soy: ["soy", "tofu", "tempeh", "edamame", "miso"],
+    "Wheat / gluten": ["wheat", "bread", "pasta", "flour", "gluten", "bagel", "tortilla", "cracker", "cereal", "noodle", "couscous", "barley"],
+    Sesame: ["sesame", "tahini"],
+  };
+
+  const userAllergies = (profile?.allergies || []).filter((a) => a && a !== "None");
+
+  // Returns array of allergen names that the given food name appears to match
+  function matchAllergens(foodName) {
+    if (!userAllergies.length || !foodName) return [];
+    const lower = foodName.toLowerCase();
+    return userAllergies.filter((allergen) => {
+      const kws = ALLERGEN_KEYWORDS[allergen] || [allergen.toLowerCase()];
+      return kws.some((kw) => lower.includes(kw));
+    });
+  }
+
+  const currentAllergenMatches = matchAllergens(name);
 
   // Debounced USDA search; falls back to local FOOD_DB if the API fails
   useEffect(() => {
@@ -3349,6 +3395,7 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
           kcal: f.kcal,
           label: f.label || "per 100g",
           macros: { protein: f.protein || 0, carbs: f.carbs || 0, fat: f.fat || 0 },
+          micros: f.micros || null,
         }));
         // Fall back to local list if USDA returned nothing
         setSuggestions(foods.length ? foods.slice(0, 8) : localMatches(q));
@@ -3367,12 +3414,20 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
   function localMatches(q) {
     return FOOD_DB.filter((f) => f.name.toLowerCase().includes(q.toLowerCase()))
       .slice(0, 8)
-      .map((f) => ({ name: f.name, kcal: f.kcal, label: f.label, macros: null }));
+      .map((f) => ({ name: f.name, kcal: f.kcal, label: f.label, macros: null, micros: null }));
   }
 
   const today = todayString();
   const todayMeals = meals.filter((m) => (m.date || today) === today);
   const total = todayMeals.reduce((a, b) => a + b.kcal, 0);
+  const macroTotals = todayMeals.reduce(
+    (acc, m) => ({
+      protein: acc.protein + (m.proteinG || 0),
+      carbs: acc.carbs + (m.carbG || 0),
+      fat: acc.fat + (m.fatG || 0),
+    }),
+    { protein: 0, carbs: 0, fat: 0 }
+  );
   const target = results?.target ?? null;
   const remaining = target ? target - total : null;
   const pct = target ? Math.min(100, (total / target) * 100) : 0;
@@ -3391,6 +3446,7 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
     setBaseKcal(f.kcal);
     setBaseLabel(f.label);
     setBaseMacros(f.macros); // null for local foods, real macros for USDA
+    setBaseMicros(f.micros || null);
     setKcal(String(Math.round(f.kcal * servings)));
     setShowSuggestions(false);
     setSuggestions([]);
@@ -3405,6 +3461,7 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
       setBaseKcal(null);
       setBaseLabel("");
       setBaseMacros(null);
+      setBaseMicros(null);
     }
   }
 
@@ -3443,6 +3500,7 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
     setBaseKcal(null);
     setBaseLabel("");
     setBaseMacros(null);
+    setBaseMicros(null);
   }
 
   return (
@@ -3564,6 +3622,47 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
             )}
           </div>
         )}
+
+        {/* Allergy warning — warns, does not block */}
+        {currentAllergenMatches.length > 0 && (
+          <div className="mt-3 flex items-start gap-2 text-xs px-3 py-2 rounded-sm" style={{ color: "#B91C1C", background: "#FEF2F2", border: "1px solid #FECACA" }}>
+            <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <span>
+              <strong>Allergy alert:</strong> this looks like it may contain {currentAllergenMatches.join(", ")}, which you flagged in your survey. You can still log it, but double-check the ingredients.
+            </span>
+          </div>
+        )}
+
+        {/* Micronutrients — shown when available from USDA */}
+        {baseMicros && Object.keys(baseMicros).length > 0 && (
+          <div className="mt-3 border border-slate-100 rounded-sm p-3 bg-slate-50">
+            <div className="micro text-slate-500 mb-2">Vitamins & electrolytes ({baseLabel === "per 100g" ? `${servings * 100}g` : "serving"})</div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {[
+                ["Sodium", "sodium"],
+                ["Potassium", "potassium"],
+                ["Calcium", "calcium"],
+                ["Iron", "iron"],
+                ["Magnesium", "magnesium"],
+                ["Fiber", "fiber"],
+                ["Vitamin C", "vitaminC"],
+                ["Vitamin D", "vitaminD"],
+                ["Vitamin A", "vitaminA"],
+              ].map(([label, key]) =>
+                baseMicros[key] ? (
+                  <span key={key} className="text-xs text-slate-600">
+                    {label}:{" "}
+                    <span style={{ color: NAVY }}>
+                      {Math.round(baseMicros[key].v * servings * 10) / 10}
+                      {baseMicros[key].u ? baseMicros[key].u.toLowerCase() : ""}
+                    </span>
+                  </span>
+                ) : null
+              )}
+            </div>
+          </div>
+        )}
+
         {name.trim().length > 1 && baseKcal == null && !searching && suggestions.length === 0 && (
           <div className="text-xs text-slate-500 mt-2">No matches — type your own calories above.</div>
         )}
@@ -3598,8 +3697,15 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
                 key={m.id}
                 className="flex items-center justify-between gap-4 px-5 py-4 border-b border-slate-100 last:border-b-0"
               >
-                <div className="text-sm" style={{ color: NAVY }}>{m.name}</div>
-                <div className="flex items-center gap-4">
+                <div className="min-w-0">
+                  <div className="text-sm" style={{ color: NAVY }}>{m.name}</div>
+                  {(m.proteinG != null || m.carbG != null || m.fatG != null) && (
+                    <div className="text-xs text-slate-500 mt-0.5">
+                      P {m.proteinG || 0}g · C {m.carbG || 0}g · F {m.fatG || 0}g
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-4 flex-shrink-0">
                   <div className="text-sm font-medium" style={{ color: NAVY }}>{m.kcal} kcal</div>
                   <button
                     onClick={() => removeMeal(m.id)}
@@ -3611,6 +3717,16 @@ function MealLogger({ results, meals, addMeal, removeMeal, clearTodayMeals, curr
                 </div>
               </li>
             ))}
+            {/* Daily totals footer */}
+            <li className="flex items-center justify-between gap-4 px-5 py-4 bg-slate-50">
+              <div>
+                <div className="micro text-slate-500">Daily totals</div>
+                <div className="text-xs text-slate-600 mt-0.5">
+                  P {macroTotals.protein}g · C {macroTotals.carbs}g · F {macroTotals.fat}g
+                </div>
+              </div>
+              <div className="text-sm font-medium" style={{ color: NAVY }}>{total} kcal</div>
+            </li>
           </ul>
         )}
       </div>
@@ -5948,6 +6064,18 @@ export default function App() {
           to { opacity: 1; transform: scale(1) translateY(0); }
         }
         .lift-pop { animation: lift-pop 0.4s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+
+        .lift-hotline-btn {
+          transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+          box-shadow: 0 2px 8px rgba(225, 29, 42, 0.35);
+        }
+        .lift-hotline-btn:hover {
+          transform: scale(1.12);
+          box-shadow: 0 4px 16px rgba(225, 29, 42, 0.5);
+        }
+        .lift-hotline-btn:active {
+          transform: scale(0.96);
+        }
       `}</style>
 
       <Header
@@ -6001,6 +6129,7 @@ export default function App() {
         {view === "logger" && (
           <MealLogger
             results={results}
+            profile={profile}
             meals={meals}
             addMeal={(m) => setMeals((arr) => [...arr, m])}
             removeMeal={(id) => setMeals((arr) => arr.filter((x) => x.id !== id))}
